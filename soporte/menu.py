@@ -1,9 +1,6 @@
 """
 Interfaz de línea de comandos del sistema.
 """
-from datetime import datetime
-
-from .ticket import Ticket
 from .soporte_tecnico import SoporteTecnico
 from .sesion import Sesion
 
@@ -59,10 +56,28 @@ def menu():
                     if opcion == 1:
                         nombre = input("Nombre: ")
                         descripcion = input("Descripción del problema: ")
-                        horaLlegada = datetime.now()
-                        ticket = Ticket(soporteTecnico.contador_id, nombre, descripcion, horaLlegada)
-                        soporteTecnico.agregar_ticket(ticket)
-                        soporteTecnico.contador_id += 1
+                        resultado = soporteTecnico.crear_ticket(nombre, descripcion)
+
+                        if resultado["estado"] == "duplicados":
+                            duplicados = resultado["duplicados"]
+                            print(f"""
+        ⚠️  AVISO: Se encontraron {len(duplicados)} ticket(s) similar(es) en la cola
+        ================================""")
+                            for d in duplicados:
+                                print(f"""
+        Ticket #{d.id} de {d.nombre}
+        Categoría:   {d.categoria}
+        Descripción: {d.descripcion}
+        --------------------------------""")
+                            respuesta = input("¿Desea continuar de todas formas? (s/n): ").strip().lower()
+                            if respuesta == "s":
+                                ticket_creado = soporteTecnico.confirmar_ticket_pendiente()
+                                print(f"Ticket #{ticket_creado.id} agregado a la cola!")
+                            else:
+                                soporteTecnico.descartar_ticket_pendiente()
+                                print("Ticket no creado.")
+                        else:
+                            print(f"Ticket #{resultado['ticket'].id} agregado a la cola!")
                     elif opcion == 2:
                         soporteTecnico.posicion_ticket()
 

@@ -14,7 +14,7 @@ import heapq
 from datetime import datetime
 
 from .ticket import Ticket
-from .clasificador import clasificar_ticket, detectar_duplicado
+from .clasificador import clasificar_ticket, detectar_duplicados
 
 
 class SoporteTecnico:
@@ -34,37 +34,63 @@ class SoporteTecnico:
         self.tiempo_limite_atencion = 30
         # contador para asignar ids unicos e incrementales
         self.contador_id = 1
+        # ticket que quedo pendiente de confirmacion (caso de duplicados)
+        self._ticket_pendiente = None
 
     # ==================== FUNCIONES DEL USUARIO ====================
 
-    def agregar_ticket(self, ticket: Ticket):
-        prioridades = {"critica": 1, "alta": 2, "media": 3, "baja": 4}
+    def crear_ticket(self, nombre: str, descripcion: str) -> dict:
+        """
+        Crea un ticket, lo clasifica y revisa duplicados.
 
-        # primero clasificar para tener la categoria antes de buscar duplicados
-        ticket.categoria, ticket.prioridad = clasificar_ticket(ticket.descripcion)
+        - Si no hay duplicados, lo encola directamente y devuelve:
+              {"estado": "creado", "ticket": Ticket}
+        - Si hay duplicados, deja el ticket en estado pendiente y devuelve:
+              {"estado": "duplicados", "duplicados": [Ticket, ...], "ticket": Ticket}
+          El caller debe llamar a confirmar_ticket_pendiente() o
+          descartar_ticket_pendiente() según lo que diga el usuario.
 
-        # ahora buscar duplicados con IA usando la categoria ya asignada
+        El I/O (preguntar al usuario) queda fuera de esta clase a propósito.
+        """
+        # si quedo algo pendiente de antes sin resolver, lo descartamos
+        self._ticket_pendiente = None
+
+        ticket = Ticket(self.contador_id, nombre, descripcion, datetime.now())
+
+        # clasificar primero para tener la categoria antes de buscar duplicados
+        ticket.categoria, ticket.prioridad = clasificar_ticket(descripcion)
+
+        # buscar duplicados (puede haber varios)
         tickets_en_espera = [tupla[2] for tupla in self.cola]
-        duplicado = detectar_duplicado(ticket.descripcion, ticket.categoria, tickets_en_espera)
+        duplicados = detectar_duplicados(descripcion, ticket.categoria, tickets_en_espera)
 
-        if duplicado:
-            print(f"""
-        ⚠️  AVISO: Ya existe un ticket similar en la cola
-        ================================
-        Ticket #{duplicado.id} de {duplicado.nombre}
-        Categoría:   {duplicado.categoria}
-        Descripción: {duplicado.descripcion}
-        ================================
-        ¿Desea continuar de todas formas? (s/n): """, end="")
-            respuesta = input().strip().lower()
-            if respuesta != "s":
-                print("Ticket no creado.")
-                return
+        if duplicados:
+            self._ticket_pendiente = ticket
+            return {"estado": "duplicados", "duplicados": duplicados, "ticket": ticket}
 
+        self._encolar(ticket)
+        return {"estado": "creado", "ticket": ticket}
+
+    def confirmar_ticket_pendiente(self) -> Ticket | None:
+        """Encola el ticket que quedo pendiente por duplicados."""
+        if not self._ticket_pendiente:
+            return None
+        ticket = self._ticket_pendiente
+        self._ticket_pendiente = None
+        self._encolar(ticket)
+        return ticket
+
+    def descartar_ticket_pendiente(self):
+        """Descarta el ticket pendiente sin encolarlo. No consume ID."""
+        self._ticket_pendiente = None
+
+    def _encolar(self, ticket: Ticket):
+        """Mete el ticket al heap y consume un ID. Uso interno."""
+        prioridades = {"critica": 1, "alta": 2, "media": 3, "baja": 4}
         numero_prioridad = prioridades[ticket.prioridad]
         heapq.heappush(self.cola, (numero_prioridad, ticket.id, ticket))
-        print(f"Ticket #{ticket.id} agregado a la cola!")
-                
+        self.contador_id += 1
+
 
     def posicion_ticket(self):
         if not self.cola:
@@ -201,11 +227,15 @@ class SoporteTecnico:
 
             self.historial.append(self.ticket_actual)
 
+            # total_seconds() para no romper con duraciones >24h;
+            # division decimal para no perder tickets de <1 min
             tiempos = [
-                (t.horaSolucion - t.horaInicioAtencion).seconds // 60
+                (t.horaSolucion - t.horaInicioAtencion).total_seconds() / 60
                 for t in self.historial
             ]
-            self.tiempo_atencion_promedio = sum(tiempos) // len(tiempos)
+            promedio = sum(tiempos) / len(tiempos)
+            # piso de 1 minuto: evita que estimaciones futuras colapsen a 0
+            self.tiempo_atencion_promedio = max(1, round(promedio))
 
             self.ticket_actual = None
             print("Ticket resuelto y movido al historial!")
@@ -214,7 +244,7 @@ class SoporteTecnico:
 
     def verificar_tiempo_atencion(self):
         if self.ticket_actual:
-            tiempo_transcurrido = (datetime.now() - self.ticket_actual.horaInicioAtencion).seconds // 60
+            tiempo_transcurrido = int((datetime.now() - self.ticket_actual.horaInicioAtencion).total_seconds() // 60)
 
             if tiempo_transcurrido > self.tiempo_limite_atencion:
                 print(f"""
@@ -251,7 +281,7 @@ class SoporteTecnico:
             ================================""")
 
         for ticket in self.historial:
-            tiempo_atencion = (ticket.horaSolucion - ticket.horaInicioAtencion).seconds // 60
+            tiempo_atencion = int((ticket.horaSolucion - ticket.horaInicioAtencion).total_seconds() // 60)
             print(f"""
             ID:              #{ticket.id}
             Nombre:          {ticket.nombre}

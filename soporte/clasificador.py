@@ -10,6 +10,7 @@ El fallback garantiza que el sistema sigue funcionando sin internet
 o cuando OpenAI está caído.
 """
 import os
+import unicodedata
 from enum import Enum
 from openai import OpenAI
 from pydantic import BaseModel
@@ -17,6 +18,16 @@ from dotenv import load_dotenv
 from difflib import SequenceMatcher
 
 load_dotenv()
+
+
+def _normalizar(texto: str) -> str:
+    """
+    Pasa a minusculas y remueve tildes/acentos.
+    Asi 'caído' y 'caido' (o 'CAIDO') matchean igual.
+    """
+    sin_tildes = unicodedata.normalize("NFKD", texto)
+    sin_tildes = "".join(c for c in sin_tildes if not unicodedata.combining(c))
+    return sin_tildes.lower()
 
 _cliente = None
 
@@ -98,9 +109,9 @@ def clasificar_con_ia(descripcion: str) -> tuple[str, str, str]:
 # ==================== CLASIFICADOR LOCAL (FALLBACK) ====================
 
 PALABRAS_CRITICAS = [
-    "caído", "caida", "no funciona", "todos", "nadie",
-    "perdida de datos", "no puedo acceder", "urgente",
-    "bloqueado", "sin acceso", "completo"
+    "caído", "caida", "perdida de datos", "urgente",
+    "sin acceso", "todos los usuarios", "no funciona nada",
+    "sistema caido", "fuera de servicio", "no puede trabajar nadie"
 ]
 
 PALABRAS_ALTAS = [
@@ -141,13 +152,13 @@ PALABRAS_CUENTA = [
 
 def clasificar_categoria_local(descripcion: str) -> str:
     """Detecta la categoría según palabras clave en la descripción."""
-    desc = descripcion.lower()
+    desc = _normalizar(descripcion)
 
     puntajes = {
-        "hardware":         sum(1 for p in PALABRAS_HARDWARE if p in desc),
-        "software":         sum(1 for p in PALABRAS_SOFTWARE if p in desc),
-        "red":              sum(1 for p in PALABRAS_RED      if p in desc),
-        "cuenta de usuario":sum(1 for p in PALABRAS_CUENTA   if p in desc),
+        "hardware":         sum(1 for p in PALABRAS_HARDWARE if _normalizar(p) in desc),
+        "software":         sum(1 for p in PALABRAS_SOFTWARE if _normalizar(p) in desc),
+        "red":              sum(1 for p in PALABRAS_RED      if _normalizar(p) in desc),
+        "cuenta de usuario":sum(1 for p in PALABRAS_CUENTA   if _normalizar(p) in desc),
     }
 
     mejor = max(puntajes, key=puntajes.get)
@@ -156,46 +167,73 @@ def clasificar_categoria_local(descripcion: str) -> str:
 
 def clasificar_por_palabras(descripcion: str) -> tuple[str, str, str]:
     """
-    Clasifica usando palabras clave. No depende de internet.
-    Retorna (categoria, prioridad, razon).
+    Clasifica usando un sistema de puntajes por palabras clave.
+    No depende de internet.
+
+    Reglas:
+    - Cada nivel suma 1 por cada palabra clave detectada.
+    - 'critica' requiere al menos 2 coincidencias para evitar falsos positivos
+      (palabras como 'urgente' solas no alcanzan).
+    - Entre alta/media/baja gana el de mayor puntaje. En empate, gana la
+      prioridad más alta.
+    - Si no hay coincidencias, se usa un fallback por categoría.
     """
-    desc = descripcion.lower()
-    categoria = clasificar_categoria_local(desc)
+    desc = _normalizar(descripcion)
+    categoria = clasificar_categoria_local(descripcion)
 
-    for palabra in PALABRAS_CRITICAS:
-        if palabra in desc:
-            return categoria, "critica", f"palabra clave detectada: '{palabra}'"
-
-    for palabra in PALABRAS_ALTAS:
-        if palabra in desc:
-            return categoria, "alta", f"palabra clave detectada: '{palabra}'"
-
-    for palabra in PALABRAS_MEDIAS:
-        if palabra in desc:
-            return categoria, "media", f"palabra clave detectada: '{palabra}'"
-
-    for palabra in PALABRAS_BAJAS:
-        if palabra in desc:
-            return categoria, "baja", f"palabra clave detectada: '{palabra}'"
-
-    # sin palabras clave: usar categoria como criterio de prioridad
-    fallback_prioridad = {
-        "red": "alta", "hardware": "media",
-        "software": "media", "cuenta de usuario": "baja", "otro": "baja"
+    puntajes = {
+        "critica": sum(1 for p in PALABRAS_CRITICAS if _normalizar(p) in desc),
+        "alta":    sum(1 for p in PALABRAS_ALTAS    if _normalizar(p) in desc),
+        "media":   sum(1 for p in PALABRAS_MEDIAS   if _normalizar(p) in desc),
+        "baja":    sum(1 for p in PALABRAS_BAJAS    if _normalizar(p) in desc),
     }
-    prioridad = fallback_prioridad.get(categoria, "media")
-    return categoria, prioridad, f"sin palabras clave, fallback por categoria '{categoria}'"
+
+    # critica requiere >=2 señales para confirmarse
+    if puntajes["critica"] >= 2:
+        return categoria, "critica", f"{puntajes['critica']} señales criticas detectadas"
+
+    # 1 sola señal critica no alcanza para criticar, pero sumamos como alta
+    # para no perderla en el fallback
+    if puntajes["critica"] == 1:
+        puntajes["alta"] += 1
+
+    # entre el resto: mayor puntaje gana; en empate gana mayor prioridad
+    orden = ["alta", "media", "baja"]
+    candidatos = {p: puntajes[p] for p in orden}
+
+    if max(candidatos.values()) == 0:
+        # sin palabras clave: usar categoria como criterio de prioridad
+        fallback_prioridad = {
+            "red": "alta", "hardware": "media",
+            "software": "media", "cuenta de usuario": "baja", "otro": "baja"
+        }
+        prioridad = fallback_prioridad.get(categoria, "media")
+        return categoria, prioridad, f"sin palabras clave, fallback por categoria '{categoria}'"
+
+    prioridad = max(orden, key=lambda p: (candidatos[p], -orden.index(p)))
+    return categoria, prioridad, f"puntajes {puntajes} → '{prioridad}'"
 
 
 # ==================== DETECTOR DE DUPLICADOS ====================
 
-def detectar_duplicado(descripcion_nueva: str, categoria: str, tickets_en_espera: list) -> object | None:
+def detectar_duplicados(descripcion_nueva: str, categoria: str, tickets_en_espera: list) -> list:
+    """
+    Devuelve TODOS los tickets en espera que parecen duplicados del nuevo.
+
+    Estrategia:
+    1. Filtra los tickets de la misma categoría.
+    2. Le pregunta a OpenAI cuáles son similares (puede devolver varios IDs).
+    3. Si la IA falla o el parseo no es válido, cae al fallback local con
+       SequenceMatcher y threshold 0.75.
+
+    Retorna lista vacía si no hay duplicados.
+    """
     tickets_misma_categoria = [
         t for t in tickets_en_espera if t.categoria == categoria
     ]
 
     if not tickets_misma_categoria:
-        return None
+        return []
 
     try:
         cliente = _get_cliente()
@@ -206,9 +244,9 @@ def detectar_duplicado(descripcion_nueva: str, categoria: str, tickets_en_espera
         prompt = (
             f"Tienes estos tickets abiertos de categoría '{categoria}':\n{lista}\n\n"
             f"El usuario quiere crear este ticket:\n\"{descripcion_nueva}\"\n\n"
-            "¿Alguno de los tickets abiertos trata el mismo problema?\n"
-            "Responde ÚNICAMENTE con el número del ID del ticket similar (ejemplo: 3) "
-            "o con la palabra 'ninguno'."
+            "¿Cuáles de los tickets abiertos tratan el mismo problema?\n"
+            "Responde ÚNICAMENTE con los IDs separados por comas (ejemplo: 3,5,7) "
+            "o con la palabra 'ninguno' si no hay coincidencias."
         )
         respuesta = cliente.chat.completions.create(
             model="gpt-5.4-nano",
@@ -217,24 +255,30 @@ def detectar_duplicado(descripcion_nueva: str, categoria: str, tickets_en_espera
         )
         texto = respuesta.choices[0].message.content.strip().lower()
 
-        if texto != "ninguno":
-            id_duplicado = int(texto)
-            for t in tickets_misma_categoria:
-                if t.id == id_duplicado:
-                    return t
+        if texto == "ninguno":
+            return []
+
+        ids_duplicados = {int(x.strip()) for x in texto.split(",") if x.strip().isdigit()}
+        duplicados = [t for t in tickets_misma_categoria if t.id in ids_duplicados]
+
+        # si el parseo dejó la lista vacía pero el modelo dijo algo distinto a "ninguno",
+        # forzamos el fallback para no perder posibles coincidencias
+        if not duplicados and ids_duplicados == set():
+            raise ValueError("respuesta de IA no parseable")
+
+        return duplicados
 
     except Exception:
-        # fallback local con similitud de texto
-        for ticket in tickets_misma_categoria:
-            similitud = SequenceMatcher(
+        # fallback local con similitud de texto (normalizada para no fallar por tildes)
+        desc_nueva_norm = _normalizar(descripcion_nueva)
+        return [
+            t for t in tickets_misma_categoria
+            if SequenceMatcher(
                 None,
-                descripcion_nueva.lower(),
-                ticket.descripcion.lower()
-            ).ratio()
-            if similitud > 0.5:
-                return ticket
-
-    return None
+                desc_nueva_norm,
+                _normalizar(t.descripcion)
+            ).ratio() > 0.75
+        ]
 
 
 # ==================== PUNTO DE ENTRADA UNIFICADO ====================
