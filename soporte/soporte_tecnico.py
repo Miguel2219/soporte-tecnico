@@ -28,8 +28,8 @@ class SoporteTecnico:
         self.historial = []
         # lista de tickets cancelados antes de ser atendidos
         self.tickets_cancelados = []
-        # tiempo base de atencion en minutos, se actualiza con el promedio real
-        self.tiempo_atencion_promedio = 15
+        # promedio en minutos, arranca en 0 (sin historial) y se recalcula al resolver tickets
+        self.tiempo_atencion_promedio = 0
         # tiempo maximo en minutos antes de alertar que un ticket fue abandonado
         self.tiempo_limite_atencion = 30
         # contador para asignar ids unicos e incrementales
@@ -58,7 +58,7 @@ class SoporteTecnico:
         ticket = Ticket(self.contador_id, nombre, descripcion, datetime.now())
 
         # clasificar primero para tener la categoria antes de buscar duplicados
-        ticket.categoria, ticket.prioridad = clasificar_ticket(descripcion)
+        ticket.categoria, ticket.prioridad, ticket.razon = clasificar_ticket(descripcion)
 
         # buscar duplicados (puede haber varios)
         tickets_en_espera = [tupla[2] for tupla in self.cola]
@@ -479,3 +479,80 @@ class SoporteTecnico:
         Prioridad:   {ticket.prioridad}
         Hora llegada:{ticket.horaLlegada.strftime("%H:%M:%S")}
         --------------------------------""")
+
+
+    # ==================== METODOS PUROS PARA API (sin input()) ====================
+
+    def cancelar_por_id(self, ticket_id: int) -> bool:
+        """Cancela un ticket de la cola por ID. Devuelve True si lo encontro."""
+        if self.ticket_actual and self.ticket_actual.id == ticket_id:
+            return False
+        for i, tupla in enumerate(self.cola):
+            if tupla[2].id == ticket_id:
+                ticket_cancelado = self.cola.pop(i)[2]
+                ticket_cancelado.estado = "cancelado"
+                self.tickets_cancelados.append(ticket_cancelado)
+                heapq.heapify(self.cola)
+                return True
+        return False
+
+    def atender_siguiente(self):
+        """Toma el siguiente ticket de la cola. Devuelve el Ticket o None."""
+        if self.ticket_actual or not self.cola:
+            return None
+        self.ticket_actual = heapq.heappop(self.cola)[2]
+        self.ticket_actual.estado = "en atención"
+        self.ticket_actual.horaInicioAtencion = datetime.now()
+        return self.ticket_actual
+
+    def resolver_actual(self, solucion: str) -> bool:
+        """Resuelve el ticket actual con la solucion dada. Devuelve True si habia ticket."""
+        if not self.ticket_actual:
+            return False
+        self.ticket_actual.solucion = solucion
+        self.ticket_actual.horaSolucion = datetime.now()
+        self.ticket_actual.estado = "resuelto"
+        self.historial.append(self.ticket_actual)
+
+        tiempos = [
+            (t.horaSolucion - t.horaInicioAtencion).total_seconds() / 60
+            for t in self.historial
+        ]
+        promedio = sum(tiempos) / len(tiempos)
+        self.tiempo_atencion_promedio = max(1, round(promedio))
+
+        self.ticket_actual = None
+        return True
+
+    @staticmethod
+    def _serializar_ticket(t) -> dict:
+        """Convierte un Ticket a dict JSON-serializable."""
+        if t is None:
+            return None
+        return {
+            "id": t.id,
+            "nombre": t.nombre,
+            "descripcion": t.descripcion,
+            "categoria": t.categoria,
+            "prioridad": t.prioridad,
+            "razon": getattr(t, "razon", None),
+            "horaLlegada": t.horaLlegada.isoformat() if t.horaLlegada else None,
+            "horaInicioAtencion": t.horaInicioAtencion.isoformat() if t.horaInicioAtencion else None,
+            "horaSolucion": t.horaSolucion.isoformat() if t.horaSolucion else None,
+            "solucion": t.solucion,
+            "estado": t.estado,
+        }
+
+    def obtener_estado(self) -> dict:
+        """Devuelve el estado completo del sistema, JSON-serializable."""
+        # cola ordenada por prioridad e id (mismo orden que el heap reportaria)
+        cola_ordenada = sorted(self.cola)
+        return {
+            "cola": [self._serializar_ticket(tup[2]) for tup in cola_ordenada],
+            "historial": [self._serializar_ticket(t) for t in self.historial],
+            "cancelados": [self._serializar_ticket(t) for t in self.tickets_cancelados],
+            "ticketActual": self._serializar_ticket(self.ticket_actual),
+            "contadorId": self.contador_id,
+            "tiempoAtencionPromedio": self.tiempo_atencion_promedio,
+            "tiempoLimiteAtencion": self.tiempo_limite_atencion,
+        }

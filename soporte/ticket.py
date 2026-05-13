@@ -10,6 +10,7 @@ class Ticket:
         self.descripcion = descripcion
         self.categoria = None
         self.prioridad = None
+        self.razon = None  # explicacion corta del clasificador (IA o local)
         self.horaLlegada = horaLlegada
         self.horaInicioAtencion = None
         self.horaSolucion = None

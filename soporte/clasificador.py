@@ -244,7 +244,13 @@ def detectar_duplicados(descripcion_nueva: str, categoria: str, tickets_en_esper
         prompt = (
             f"Tienes estos tickets abiertos de categoría '{categoria}':\n{lista}\n\n"
             f"El usuario quiere crear este ticket:\n\"{descripcion_nueva}\"\n\n"
-            "¿Cuáles de los tickets abiertos tratan el mismo problema?\n"
+            "Identifica SOLO los tickets que reportan el MISMO incidente sobre un "
+            "RECURSO COMPARTIDO (servidor caido, WiFi de un piso, impresora del area, "
+            "sistema corporativo, VPN, red del edificio, etc.).\n\n"
+            "Si los tickets describen problemas en recursos INDIVIDUALES de cada usuario "
+            "(su propio teclado, su mouse, su contraseña personal, su laptop, su Outlook, "
+            "su pantalla, su pc), NO son duplicados aunque la redacción sea parecida, "
+            "porque cada usuario tiene su propia instancia del recurso.\n\n"
             "Responde ÚNICAMENTE con los IDs separados por comas (ejemplo: 3,5,7) "
             "o con la palabra 'ninguno' si no hay coincidencias."
         )
@@ -283,20 +289,20 @@ def detectar_duplicados(descripcion_nueva: str, categoria: str, tickets_en_esper
 
 # ==================== PUNTO DE ENTRADA UNIFICADO ====================
 
-def clasificar_ticket(descripcion: str) -> tuple[str, str]:
+def clasificar_ticket(descripcion: str) -> tuple[str, str, str]:
     """
     Clasifica un ticket asignando categoría y prioridad automáticamente.
     Intenta primero con IA; si falla, usa el clasificador local.
-    Retorna (categoria, prioridad).
+    Retorna (categoria, prioridad, razon).
     """
     try:
         categoria, prioridad, razon = clasificar_con_ia(descripcion)
         print(f"  → [IA] Categoría: {categoria} | Prioridad: {prioridad}")
         print(f"    Razón: {razon}")
-        return categoria, prioridad
+        return categoria, prioridad, razon
     except Exception as e:
         categoria, prioridad, razon = clasificar_por_palabras(descripcion)
         print(f"  ⚠ API no disponible ({type(e).__name__}). Usando clasificador local.")
         print(f"  → [Local] Categoría: {categoria} | Prioridad: {prioridad}")
         print(f"    Razón: {razon}")
-        return categoria, prioridad
+        return categoria, prioridad, razon

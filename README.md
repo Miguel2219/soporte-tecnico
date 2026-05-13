@@ -55,7 +55,7 @@ soporte-tecnico/
 Desde la raíz del proyecto:
 
 ```bash
-python main.py
+uvicorn soporte.api:app --reload
 ```
 
 ## Cómo funciona la clasificación
