@@ -14,7 +14,7 @@ import heapq
 from datetime import datetime
 
 from .ticket import Ticket
-from .clasificador import asignar_prioridad
+from .clasificador import clasificar_ticket, detectar_duplicado
 
 
 class SoporteTecnico:
@@ -40,13 +40,31 @@ class SoporteTecnico:
     def agregar_ticket(self, ticket: Ticket):
         prioridades = {"critica": 1, "alta": 2, "media": 3, "baja": 4}
 
-        # Delegamos la clasificacion al modulo clasificador
-        # (intenta IA, cae a palabras clave si falla)
-        ticket.prioridad = asignar_prioridad(ticket.descripcion, ticket.categoria)
+        # primero clasificar para tener la categoria antes de buscar duplicados
+        ticket.categoria, ticket.prioridad = clasificar_ticket(ticket.descripcion)
+
+        # ahora buscar duplicados con IA usando la categoria ya asignada
+        tickets_en_espera = [tupla[2] for tupla in self.cola]
+        duplicado = detectar_duplicado(ticket.descripcion, ticket.categoria, tickets_en_espera)
+
+        if duplicado:
+            print(f"""
+        ⚠️  AVISO: Ya existe un ticket similar en la cola
+        ================================
+        Ticket #{duplicado.id} de {duplicado.nombre}
+        Categoría:   {duplicado.categoria}
+        Descripción: {duplicado.descripcion}
+        ================================
+        ¿Desea continuar de todas formas? (s/n): """, end="")
+            respuesta = input().strip().lower()
+            if respuesta != "s":
+                print("Ticket no creado.")
+                return
 
         numero_prioridad = prioridades[ticket.prioridad]
         heapq.heappush(self.cola, (numero_prioridad, ticket.id, ticket))
         print(f"Ticket #{ticket.id} agregado a la cola!")
+                
 
     def posicion_ticket(self):
         if not self.cola:
